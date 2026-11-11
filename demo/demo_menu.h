@@ -32,9 +32,9 @@ inline void Render(State& s, bool* open) {
     SetTheme(s.theme == 1 ? Theme::Light : Theme::Dark);
     SetReduceMotion(s.reduceMotion);
 
-    float m = Px(10);
-    ImVec2 size(io.DisplaySize.x - 2 * m, io.DisplaySize.y - 2 * m);
-    if (BeginWindow("Fluent Menu", open, ImVec2(m, m), size)) {
+    // Window takes 58% x 66% of the screen (always kept inside 30..70%), centred on first show.
+    ImVec2 size = WindowSize(0.58f, 0.66f);
+    if (BeginWindow("Fluent Menu", open, CenterPos(size), size)) {
         BeginNav();
         NavItem(Icon::Eye, "Visuals", &s.tab, 0);
         NavItem(Icon::Target, "Aim", &s.tab, 1);
@@ -54,15 +54,15 @@ inline void Render(State& s, bool* open) {
 
         if (s.tab == 0) {
             PageTitle("Visuals / ESP");
-            ToggleCard(Icon::Eye, "Enable ESP", "Master switch for every overlay element", &s.esp);
+            ToggleCard(Icon::Eye, "Enable ESP", "Master switch for all overlays", &s.esp);
             GroupHeader("Elements");
-            if (BeginSection(Icon::Eye, "Players", "Boxes, skeleton, lines and info labels", true)) {
-                ToggleCard(Icon::None, "Boxes", "Bounding box around each target", &s.boxes);
-                ComboCard(Icon::None, "Box style", "Shape of the bounding box", &s.boxStyle, boxStyles, 3);
-                ToggleCard(Icon::None, "Skeleton", "Bone lines", &s.skeleton);
-                ToggleCard(Icon::None, "Snap lines", "Line from screen edge to target", &s.lines);
+            if (BeginSection(Icon::Eye, "Players", "Boxes, skeleton, lines, labels", true)) {
+                ToggleCard(Icon::None, "Boxes", "", &s.boxes);
+                ComboCard(Icon::None, "Box style", "", &s.boxStyle, boxStyles, 3);
+                ToggleCard(Icon::None, "Skeleton", "", &s.skeleton);
+                ToggleCard(Icon::None, "Snap lines", "", &s.lines);
                 ToggleCard(Icon::None, "Names", "", &s.names);
-                ToggleCard(Icon::None, "Health", "Health bar next to the box", &s.health);
+                ToggleCard(Icon::None, "Health", "", &s.health);
                 ToggleCard(Icon::None, "Distance", "", &s.distance);
                 EndSection();
             }
@@ -73,40 +73,37 @@ inline void Render(State& s, bool* open) {
             ColorCard(Icon::Sun, "Line color", "", s.lineCol);
             GroupHeader("Rendering");
             SliderFloatCard(Icon::Gear, "Line thickness", "In pixels", &s.thickness, 0.5f, 5.f, "%.1f");
-            SliderIntCard(Icon::Gear, "Max distance", "Targets farther than this are hidden", &s.maxDist, 50, 1000);
+            SliderIntCard(Icon::Gear, "Max distance", "Farther targets are hidden", &s.maxDist, 50, 1000);
         } else if (s.tab == 1) {
             PageTitle("Aim");
             ToggleCard(Icon::Target, "Enable aim assist", "Master switch", &s.aim);
             KeyBindCard(Icon::Key, "Hotkey", "Hold to activate", &s.aimKey);
             GroupHeader("Targeting");
-            SliderFloatCard(Icon::Target, "FOV", "Field of view in degrees", &s.fov, 1.f, 180.f, "%.0f");
-            SliderFloatCard(Icon::Target, "Smoothing", "Higher is slower and smoother", &s.smooth, 1.f, 20.f, "%.1f");
+            SliderFloatCard(Icon::Target, "FOV", "Degrees", &s.fov, 1.f, 180.f, "%.0f");
+            SliderFloatCard(Icon::Target, "Smoothing", "Higher is smoother", &s.smooth, 1.f, 20.f, "%.1f");
             ComboCard(Icon::Target, "Target bone", "", &s.bone, bones, 4);
             ComboCard(Icon::Target, "Priority", "How the target is chosen", &s.priority, prios, 3);
             MultiComboCard(Icon::Info, "Target groups", "", layerNames, s.targets, 3);
             GroupHeader("FOV circle");
-            ToggleCard(Icon::Eye, "Show FOV circle", "Draws the aim radius on screen", &s.showFov);
+            ToggleCard(Icon::Eye, "Show FOV circle", "Draws the aim radius", &s.showFov);
             ColorCard(Icon::Sun, "Circle color", "", s.fovCol);
         } else if (s.tab == 2) {
             PageTitle("Memory");
             ValueCard(Icon::Chip, "Driver status", "Kernel driver connection", s.driverLoaded ? "Connected" : "Not loaded", s.driverLoaded);
-            if (ButtonCard(Icon::Chip, "Driver", "Reload or unload the driver", s.driverLoaded ? "Unload" : "Load", s.driverLoaded ? Kind::Danger : Kind::Accent)) {
+            if (ButtonCard(Icon::Chip, "Driver", "Load or unload", s.driverLoaded ? "Unload" : "Load", s.driverLoaded ? Kind::Danger : Kind::Accent)) {
                 s.driverLoaded = !s.driverLoaded;
                 PushToast(s.driverLoaded ? "Driver loaded" : "Driver unloaded", s.driverLoaded ? ToastType::Success : ToastType::Info);
             }
             GroupHeader("Values");
-            SliderIntCard(Icon::Gear, "Integer value", "Click the number for exact input", &s.valueA, 0, 1000);
+            SliderIntCard(Icon::Gear, "Integer value", "Tap the number to type", &s.valueA, 0, 1000);
             SliderFloatCard(Icon::Gear, "Float value", "", &s.valueB, 0.f, 10.f, "%.2f");
-            CardBegin(Icon::Key, "Address", "Hex address");
-            ImGui::SetCursorScreenPos(CardCtrl(Px(220), Px(32)));
-            InputText("##addr", s.addr, sizeof(s.addr), 220.f, "0x0000000");
-            CardEnd();
+            InputCard(Icon::Key, "Address", "Hex address", s.addr, sizeof(s.addr), "0x0000000");
         } else {
             PageTitle("Settings");
             GroupHeader("Appearance");
             ComboCard(Icon::Globe, "Language", "Interface language", &s.lang, langs, 3);
-            ComboCard(Icon::Sun, "Theme", "Dark or light, with a smooth transition", &s.theme, themes, 2);
-            if (SliderFloatCard(Icon::Gear, "UI scale", "Applied when you release the slider", &s.pendingScale, 0.75f, 1.75f, "%.2f")) s.scaleDirty = true;
+            ComboCard(Icon::Sun, "Theme", "Smooth transition", &s.theme, themes, 2);
+            if (SliderFloatCard(Icon::Gear, "UI scale", "Applied on release", &s.pendingScale, 0.75f, 1.75f, "%.2f")) s.scaleDirty = true;
             if (s.scaleDirty && !ImGui::IsMouseDown(0)) { s.uiScale = s.pendingScale; SetScale(s.uiScale); s.scaleDirty = false; }
             ToggleCard(Icon::Gear, "Reduce animations", "Turns off motion effects", &s.reduceMotion);
             GroupHeader("General");
@@ -114,18 +111,15 @@ inline void Render(State& s, bool* open) {
             ToggleCard(Icon::Gear, "Show FPS", "Counter in the corner", &s.showFps);
             if (ButtonCard(Icon::Eye, "Screenshot", "Save the current frame", "Capture")) PushToast("Screenshot saved", ToastType::Success);
             GroupHeader("Configs");
-            CardBegin(Icon::Info, "Config name", "Used when saving or loading");
-            ImGui::SetCursorScreenPos(CardCtrl(Px(220), Px(32)));
-            InputText("##cfg", s.cfgName, sizeof(s.cfgName), 220.f, "name");
-            CardEnd();
-            ImGui::Dummy(ImVec2(0, Px(4)));
+            InputCard(Icon::Info, "Config name", "Used when saving or loading", s.cfgName, sizeof(s.cfgName), "name");
+            ImGui::Dummy(ImVec2(0, Px(2)));
             if (Button("Save", Kind::Accent)) PushToast("Config saved", ToastType::Success);
             Tooltip("Write the current settings to the named config");
             ImGui::SameLine();
             if (Button("Load")) PushToast("Config loaded");
             ImGui::SameLine();
             if (Button("Reset", Kind::Danger)) PushToast("Settings reset to defaults", ToastType::Error);
-            Spacer(24);
+            Spacer(16);
         }
         EndPage();
         EndContent();
@@ -134,7 +128,7 @@ inline void Render(State& s, bool* open) {
 
     if (s.showFps) {
         char b[32]; snprintf(b, sizeof(b), "%.0f FPS", io.Framerate);
-        ImGui::GetForegroundDrawList()->AddText(Ctx().fontSmall, FontPx(Ctx().fontSmall), ImVec2(io.DisplaySize.x - Px(70), Px(6)), U32(Pal().textSecondary), b);
+        ImGui::GetForegroundDrawList()->AddText(Ctx().fontSmall, FontPx(Ctx().fontSmall), ImVec2(io.DisplaySize.x - Px(56), Px(4)), U32(Pal().textSecondary), b);
     }
     RenderToasts();
 }

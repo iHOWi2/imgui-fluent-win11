@@ -1,6 +1,6 @@
-// fluent.h - Windows 11 (Fluent Design) theme + widgets for Dear ImGui.
+// fluent.h - Windows 11 (Fluent Design) theme + widgets for Dear ImGui.  (v2: compact + animated)
 // Header-only. Visual layer only: no application logic lives here.
-// Needs Dear ImGui >= 1.91 (uses imgui_internal.h). Include after your ImGui backend headers.
+// Needs Dear ImGui >= 1.91 (uses imgui_internal.h).
 //
 // Usage:
 //   Fluent::Init(dpiScale);                 // once, after ImGui::CreateContext()
@@ -34,11 +34,12 @@ struct Palette {
     ImVec4 bg, card, cardHover, control, controlHover, controlActive, subtle, stroke, strokeStrong;
     ImVec4 text, textSecondary, textDisabled, accent, accentHover, accentActive, onAccent;
     ImVec4 danger, dangerHover, popup, shadow;
+    ImVec4 glowA, glowB, glowC;          // colours of the floating background gradient
 };
 
 inline Palette DarkPalette() {
     Palette p;
-    p.bg = RGBA(32, 32, 32);
+    p.bg = RGBA(28, 28, 30);
     p.card = RGBA(255, 255, 255, 0.0512f);
     p.cardHover = RGBA(255, 255, 255, 0.0837f);
     p.control = RGBA(255, 255, 255, 0.0605f);
@@ -56,14 +57,17 @@ inline Palette DarkPalette() {
     p.onAccent = RGBA(0, 0, 0, 0.9f);
     p.danger = RGBA(196, 43, 28);
     p.dangerHover = RGBA(196, 43, 28, 0.9f);
-    p.popup = RGBA(44, 44, 44);
-    p.shadow = RGBA(0, 0, 0, 0.38f);
+    p.popup = RGBA(44, 44, 46);
+    p.shadow = RGBA(0, 0, 0, 0.45f);
+    p.glowA = RGBA(40, 130, 255, 0.34f);
+    p.glowB = RGBA(150, 70, 255, 0.28f);
+    p.glowC = RGBA(0, 190, 170, 0.20f);
     return p;
 }
 
 inline Palette LightPalette() {
     Palette p;
-    p.bg = RGBA(243, 243, 243);
+    p.bg = RGBA(243, 243, 245);
     p.card = RGBA(255, 255, 255, 0.7f);
     p.cardHover = RGBA(249, 249, 249, 0.85f);
     p.control = RGBA(255, 255, 255, 0.7f);
@@ -82,7 +86,10 @@ inline Palette LightPalette() {
     p.danger = RGBA(196, 43, 28);
     p.dangerHover = RGBA(196, 43, 28, 0.9f);
     p.popup = RGBA(252, 252, 252);
-    p.shadow = RGBA(0, 0, 0, 0.2f);
+    p.shadow = RGBA(0, 0, 0, 0.22f);
+    p.glowA = RGBA(70, 150, 255, 0.40f);
+    p.glowB = RGBA(255, 130, 190, 0.34f);
+    p.glowC = RGBA(120, 220, 200, 0.30f);
     return p;
 }
 
@@ -104,19 +111,20 @@ struct Context {
     Theme theme = Theme::Dark;
     float themeT = 0.f;                 // 0 = dark, 1 = light (animated)
     Palette pal = DarkPalette();
-    float dpi = 1.f, userScale = 1.f;   // dpi = device density, userScale = "UI scale" setting
+    float dpi = 1.f, userScale = 1.f;   // dpi = device density * base scale, userScale = "UI scale" setting
     bool reduceMotion = false;
     ImFont *fontBody = nullptr, *fontSmall = nullptr, *fontSub = nullptr, *fontTitle = nullptr;
     float time = 0.f;
     bool collapsed = false;
+    float openT = 0.f;                  // window intro animation
     // navigation indicator
     float indY = 0.f; bool indInit = false;
     // page transition
-    int pageTab = -1; float pageT = 1.f;
+    int pageTab = -1; float pageT = 1.f, pageAge = 0.f; int cardIdx = 0;
     // scroll area
     float scrollAlpha = 0.f; bool scrollHot = false; float scrollVel = 0.f; bool flung = false;
     // card layout
-    ImVec2 cardStart, cardSize;
+    ImVec2 cardStart, cardSize, cardLayout;
     std::vector<ToastItem> toasts;
 };
 
@@ -126,7 +134,8 @@ inline const Palette& Pal() { return Ctx().pal; }
 
 inline float Sat(float x) { return x < 0.f ? 0.f : (x > 1.f ? 1.f : x); }
 inline float EaseOut(float t) { float u = 1.f - Sat(t); return 1.f - u * u * u; }
-inline ImU32 U32(ImVec4 c, float a = 1.f) { c.w *= a; return ImGui::ColorConvertFloat4ToU32(c); }
+// Colour -> packed. Also multiplies by the current ImGui style alpha so custom-drawn shapes fade with their container.
+inline ImU32 U32(ImVec4 c, float a = 1.f) { c.w *= a * ImGui::GetStyle().Alpha; return ImGui::ColorConvertFloat4ToU32(c); }
 inline ImGuiID Sub(ImGuiID id, int k) { return id ^ (0x9E3779B1u * (ImGuiID)(k + 1)); }
 
 // Frame-rate independent smoothing stored per widget id. Honors the "reduce animations" setting.
@@ -155,13 +164,31 @@ inline Hit InteractRaw(const ImRect& bb, ImGuiID id) {
 }
 inline Hit Interact(const ImRect& bb, ImGuiID id) { ImGui::ItemSize(bb); return InteractRaw(bb, id); }
 
+// Soft radial glow (centre -> transparent), drawn as a triangle fan with per-vertex alpha.
+inline void RadialGlow(ImDrawList* dl, ImVec2 c, float r, ImVec4 col) {
+    const int N = 28;
+    const ImVec2 uv = dl->_Data->TexUvWhitePixel;
+    dl->PrimReserve(N * 3 + N * 6, 1 + 2 * N);
+    unsigned int base = dl->_VtxCurrentIdx;
+    dl->PrimWriteVtx(c, uv, U32(col));
+    for (int i = 0; i < N; i++) { float a = i * 2.f * IM_PI / N; dl->PrimWriteVtx(ImVec2(c.x + cosf(a) * r * 0.5f, c.y + sinf(a) * r * 0.5f), uv, U32(col, 0.45f)); }
+    for (int i = 0; i < N; i++) { float a = i * 2.f * IM_PI / N; dl->PrimWriteVtx(ImVec2(c.x + cosf(a) * r, c.y + sinf(a) * r), uv, U32(col, 0.f)); }
+    for (int i = 0; i < N; i++) {
+        int j = (i + 1) % N;
+        dl->PrimWriteIdx((ImDrawIdx)base); dl->PrimWriteIdx((ImDrawIdx)(base + 1 + i)); dl->PrimWriteIdx((ImDrawIdx)(base + 1 + j));
+        dl->PrimWriteIdx((ImDrawIdx)(base + 1 + i)); dl->PrimWriteIdx((ImDrawIdx)(base + 1 + N + i)); dl->PrimWriteIdx((ImDrawIdx)(base + 1 + N + j));
+        dl->PrimWriteIdx((ImDrawIdx)(base + 1 + i)); dl->PrimWriteIdx((ImDrawIdx)(base + 1 + N + j)); dl->PrimWriteIdx((ImDrawIdx)(base + 1 + j));
+    }
+}
+
 // ----------------------------------------------------------------------------------------------
 // Setup / per-frame
 // ----------------------------------------------------------------------------------------------
-// Loads fonts (Cyrillic included). Pass a Segoe UI Variable .ttf as fontPath to match Windows 11 exactly.
-inline void Init(float dpi, const char* fontPath = nullptr) {
+// baseScale shrinks the whole UI relative to the device density (compact look).
+inline void Init(float dpi, const char* fontPath = nullptr, float baseScale = 0.85f) {
     Context& c = Ctx();
-    c.dpi = dpi;
+    c.dpi = dpi * baseScale;
+    c.openT = 0.f;
     ImGuiIO& io = ImGui::GetIO();
     const char* cands[] = { fontPath, "/system/fonts/Roboto-Regular.ttf", "/system/fonts/Roboto[wdth,wght].ttf",
                             "/system/fonts/DroidSans.ttf", "C:/Windows/Fonts/segoeui.ttf" };
@@ -173,20 +200,29 @@ inline void Init(float dpi, const char* fontPath = nullptr) {
             fclose(f);
             ImFontConfig cfg;
             cfg.OversampleH = 2; cfg.OversampleV = 2;
-            return io.Fonts->AddFontFromFileTTF(p, px * dpi, &cfg, io.Fonts->GetGlyphRangesCyrillic());
+            return io.Fonts->AddFontFromFileTTF(p, px * c.dpi, &cfg, io.Fonts->GetGlyphRangesCyrillic());
         }
         return io.Fonts->AddFontDefault();
     };
-    c.fontBody = load(14.f);
-    c.fontSmall = load(12.f);
-    c.fontSub = load(18.f);
-    c.fontTitle = load(28.f);
+    c.fontBody = load(13.f);
+    c.fontSmall = load(11.f);
+    c.fontSub = load(15.f);
+    c.fontTitle = load(22.f);
     io.FontDefault = c.fontBody;
 }
 
 inline void SetTheme(Theme t) { Ctx().theme = t; }
 inline void SetScale(float s) { Ctx().userScale = s < 0.6f ? 0.6f : (s > 2.0f ? 2.0f : s); }
 inline void SetReduceMotion(bool b) { Ctx().reduceMotion = b; }
+
+// Window size as a fraction of the display, clamped to 30%..70% on each axis.
+inline ImVec2 WindowSize(float fx = 0.58f, float fy = 0.66f) {
+    ImVec2 d = ImGui::GetIO().DisplaySize;
+    fx = fx < 0.3f ? 0.3f : (fx > 0.7f ? 0.7f : fx);
+    fy = fy < 0.3f ? 0.3f : (fy > 0.7f ? 0.7f : fy);
+    return ImVec2(d.x * fx, d.y * fy);
+}
+inline ImVec2 CenterPos(ImVec2 size) { ImVec2 d = ImGui::GetIO().DisplaySize; return ImVec2((d.x - size.x) * 0.5f, (d.y - size.y) * 0.5f); }
 
 // Call right after ImGui::NewFrame().
 inline void NewFrame() {
@@ -205,19 +241,19 @@ inline void NewFrame() {
 
     ImGuiStyle& s = ImGui::GetStyle();
     s.WindowRounding = Px(8); s.ChildRounding = Px(8); s.PopupRounding = Px(8); s.FrameRounding = Px(4);
-    s.ScrollbarRounding = Px(4); s.ScrollbarSize = Px(4); s.GrabRounding = Px(4);
+    s.ScrollbarRounding = Px(4); s.ScrollbarSize = Px(3); s.GrabRounding = Px(4);
     s.WindowBorderSize = 0; s.ChildBorderSize = 0; s.PopupBorderSize = 1; s.FrameBorderSize = 0;
-    s.WindowPadding = ImVec2(Px(12), Px(12));
-    s.FramePadding = ImVec2(Px(12), Px(7));
-    s.ItemSpacing = ImVec2(Px(8), Px(6));
-    s.ItemInnerSpacing = ImVec2(Px(8), Px(4));
+    s.WindowPadding = ImVec2(Px(10), Px(10));
+    s.FramePadding = ImVec2(Px(10), Px(5));
+    s.ItemSpacing = ImVec2(Px(6), Px(4));
+    s.ItemInnerSpacing = ImVec2(Px(6), Px(4));
     ImVec4* col = s.Colors;
     col[ImGuiCol_Text] = P.text;
     col[ImGuiCol_TextDisabled] = P.textDisabled;
     col[ImGuiCol_WindowBg] = ImVec4(0, 0, 0, 0);
     col[ImGuiCol_ChildBg] = ImVec4(0, 0, 0, 0);
     col[ImGuiCol_PopupBg] = P.popup;
-    col[ImGuiCol_Border] = ImLerp(P.stroke, ImVec4(0, 0, 0, 0.25f), 0.f);
+    col[ImGuiCol_Border] = P.stroke;
     col[ImGuiCol_BorderShadow] = ImVec4(0, 0, 0, 0);
     col[ImGuiCol_FrameBg] = P.control;
     col[ImGuiCol_FrameBgHovered] = P.controlHover;
@@ -228,7 +264,7 @@ inline void NewFrame() {
 }
 
 // ----------------------------------------------------------------------------------------------
-// Line icons (drawn with vector primitives: always crisp at any scale, no icon font needed)
+// Line icons (vector primitives: crisp at any scale, no icon font needed)
 // ----------------------------------------------------------------------------------------------
 inline void DrawIcon(ImDrawList* dl, Icon ic, ImVec2 c, float s, ImU32 col) {
     const float th = ImMax(1.f, s * 0.085f);
@@ -319,14 +355,19 @@ inline void DrawIcon(ImDrawList* dl, Icon ic, ImVec2 c, float s, ImU32 col) {
 }
 
 // ----------------------------------------------------------------------------------------------
-// Window frame: Mica-like surface, rounded corners, hairline border, soft shadow, title bar
+// Window frame: Mica-like surface with drifting gradient glows, rounded corners, hairline border,
+// soft shadow, title bar. Pops in with a fade on first show.
 // ----------------------------------------------------------------------------------------------
 // Always pair with EndWindow(). Returns true when the content area is visible.
 inline bool BeginWindow(const char* title, bool* open, ImVec2 pos, ImVec2 size) {
     Context& c = Ctx();
     const Palette& P = c.pal;
     ImGuiIO& io = ImGui::GetIO();
-    const float th = Px(40);
+    const float th = Px(34);
+    c.openT = c.reduceMotion ? 1.f : Sat(c.openT + io.DeltaTime / 0.35f);
+    float intro = EaseOut(c.openT);
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImMax(intro, 0.001f));
+
     ImGui::SetNextWindowPos(pos, ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(size.x, c.collapsed ? th : size.y), ImGuiCond_Always);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
@@ -335,9 +376,12 @@ inline bool BeginWindow(const char* title, bool* open, ImVec2 pos, ImVec2 size) 
                                               ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings);
     ImGui::PopStyleVar(2);
 
-    // title-bar drag + caption buttons (hit-test first so the window can move before we draw)
+    // keep the window on screen (also after rotation)
     ImVec2 p = ImGui::GetWindowPos(), sz = ImGui::GetWindowSize();
-    const float bw = Px(46);
+    ImVec2 cp(ImClamp(p.x, 0.f, ImMax(0.f, io.DisplaySize.x - sz.x)), ImClamp(p.y, 0.f, ImMax(0.f, io.DisplaySize.y - sz.y)));
+    if (cp.x != p.x || cp.y != p.y) { ImGui::SetWindowPos(cp); p = cp; }
+
+    const float bw = Px(40);
     ImRect dragBB(p, ImVec2(p.x + sz.x - 2 * bw, p.y + th));
     Hit drag = InteractRaw(dragBB, ImGui::GetID("##fl_drag"));
     if (drag.held && ImGui::IsMouseDragging(0, 0.f)) ImGui::SetWindowPos(ImGui::GetWindowPos() + io.MouseDelta);
@@ -353,38 +397,51 @@ inline bool BeginWindow(const char* title, bool* open, ImVec2 pos, ImVec2 size) 
     ImDrawList* bgl = ImGui::GetBackgroundDrawList();
     for (int i = 12; i >= 1; i--) {                                   // soft shadow
         float k = 1.f - i / 12.f;
-        float ex = Px(i * 1.6f);
+        float ex = Px(i * 1.4f);
         bgl->AddRectFilled(ImVec2(p.x - ex, p.y - ex + Px(6)), ImVec2(p.x + sz.x + ex, p.y + sz.y + ex + Px(6)),
                            U32(P.shadow, 0.14f * k * k + 0.01f), r + ex);
     }
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->AddRectFilled(p, p + sz, U32(P.bg), r);                      // Mica base
-    ImVec4 tint = ImLerp(ImVec4(P.accent.x, P.accent.y, P.accent.z, 0.06f), ImVec4(P.accent.x, P.accent.y, P.accent.z, 0.05f), 0.5f);
-    dl->AddRectFilledMultiColor(ImVec2(p.x + r, p.y + 1), ImVec2(p.x + sz.x - r, p.y + ImMin(sz.y, Px(160))),
-                                U32(tint), U32(tint), U32(tint, 0.f), U32(tint, 0.f)); // subtle luminosity tint
+
+    // drifting gradient glows (drawn twice with cross-shaped clips so the rounded corners stay clean)
+    float t = c.reduceMotion ? 0.f : c.time;
+    float h = c.collapsed ? Px(200) : sz.y;
+    ImVec4 cols[3] = { P.glowA, P.glowB, P.glowC };
+    for (int pass = 0; pass < 2; pass++) {
+        if (pass == 0) dl->PushClipRect(ImVec2(p.x, p.y + r), ImVec2(p.x + sz.x, p.y + sz.y - r), true);
+        else dl->PushClipRect(ImVec2(p.x + r, p.y), ImVec2(p.x + sz.x - r, p.y + sz.y), true);
+        for (int k = 0; k < 3; k++) {
+            ImVec2 cc(p.x + sz.x * (0.5f + 0.38f * sinf(t * 0.21f + k * 2.1f) * cosf(t * 0.11f + k)),
+                      p.y + h * (0.5f + 0.34f * sinf(t * 0.17f + k * 1.3f + 1.f)));
+            float rad = ImMax(sz.x * 0.3f, h * 0.5f) * (1.0f + 0.15f * sinf(t * 0.27f + k * 1.7f));
+            RadialGlow(dl, cc, rad, cols[k]);
+        }
+        dl->PopClipRect();
+    }
     dl->AddRect(p, p + sz, U32(P.strokeStrong, 0.22f), r, 0, 1.f);
 
     // caption buttons
     if (hMin.hovered) dl->AddRectFilled(minBB.Min, minBB.Max, U32(P.subtle, hMin.held ? 0.6f : 1.f));
     if (hCls.hovered) dl->AddRectFilled(clsBB.Min, clsBB.Max, U32(P.danger, hCls.held ? 0.8f : 1.f), r, ImDrawFlags_RoundCornersTopRight);
-    DrawIcon(dl, Icon::Minimize, minBB.GetCenter(), Px(10), U32(P.text));
-    DrawIcon(dl, Icon::Close, clsBB.GetCenter(), Px(10), U32(hCls.hovered ? RGBA(255, 255, 255) : P.text));
-    DrawIcon(dl, Icon::Gear, ImVec2(p.x + Px(20), p.y + th * 0.5f), Px(14), U32(P.text));
-    DrawLabel(dl, c.fontSmall, ImVec2(p.x + Px(36), p.y + (th - FontPx(c.fontSmall)) * 0.5f), U32(P.text), title);
+    DrawIcon(dl, Icon::Minimize, minBB.GetCenter(), Px(9), U32(P.text));
+    DrawIcon(dl, Icon::Close, clsBB.GetCenter(), Px(9), U32(hCls.hovered ? RGBA(255, 255, 255) : P.text));
+    DrawIcon(dl, Icon::Gear, ImVec2(p.x + Px(16), p.y + th * 0.5f), Px(12), U32(P.text));
+    DrawLabel(dl, c.fontSmall, ImVec2(p.x + Px(30), p.y + (th - FontPx(c.fontSmall)) * 0.5f), U32(P.text), title);
 
     ImGui::SetCursorPos(ImVec2(0, th));
     return vis && !c.collapsed;
 }
-inline void EndWindow() { ImGui::End(); }
+inline void EndWindow() { ImGui::End(); ImGui::PopStyleVar(); }
 
 // ----------------------------------------------------------------------------------------------
 // Navigation (left pane, animated selection pill) and content area
 // ----------------------------------------------------------------------------------------------
-inline void BeginNav(float width = 220.f) {
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(Px(10), Px(6)));
+inline void BeginNav(float width = 140.f) {
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(Px(8), Px(4)));
     ImGui::BeginChild("##fl_nav", ImVec2(Px(width), 0), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoScrollbar);
     ImGui::PopStyleVar();
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(Px(8), Px(4)));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(Px(6), Px(2)));
 }
 inline void EndNav() { ImGui::PopStyleVar(); ImGui::EndChild(); }
 
@@ -392,7 +449,7 @@ inline bool NavItem(Icon ic, const char* label, int* sel, int idx) {
     Context& c = Ctx(); const Palette& P = c.pal;
     ImGuiID id = ImGui::GetID(label);
     ImVec2 p = ImGui::GetCursorScreenPos();
-    float w = ImGui::GetContentRegionAvail().x, h = Px(40);
+    float w = ImGui::GetContentRegionAvail().x, h = Px(34);
     ImRect bb(p, ImVec2(p.x + w, p.y + h));
     Hit hit = Interact(bb, id);
     bool changed = false;
@@ -408,13 +465,14 @@ inline bool NavItem(Icon ic, const char* label, int* sel, int idx) {
         if (!c.indInit || c.reduceMotion) { c.indY = target; c.indInit = true; }
         float dy = target - c.indY;
         c.indY += dy * (1.f - expf(-18.f * ImGui::GetIO().DeltaTime));
-        float ih = Px(16) + ImMin(fabsf(dy) * 0.6f, Px(18));          // stretches while travelling
+        float ih = Px(14) + ImMin(fabsf(dy) * 0.6f, Px(16));          // stretches while travelling
         float cy = ImGui::GetWindowPos().y + c.indY;
         dl->AddRectFilled(ImVec2(bb.Min.x, cy - ih * 0.5f), ImVec2(bb.Min.x + Px(3), cy + ih * 0.5f), U32(P.accent), Px(2));
     }
     float cy = bb.GetCenter().y;
-    DrawIcon(dl, ic, ImVec2(p.x + Px(24), cy), Px(18), U32(P.text));
-    DrawLabel(dl, c.fontBody, ImVec2(p.x + Px(44), cy - FontPx(c.fontBody) * 0.5f), U32(P.text), label);
+    float nudge = Px(2) * sl;                                          // selected item slides a hair to the right
+    DrawIcon(dl, ic, ImVec2(p.x + Px(20) + nudge, cy), Px(16), U32(ImLerp(P.textSecondary, P.text, sl)));
+    DrawLabel(dl, c.fontBody, ImVec2(p.x + Px(36) + nudge, cy - FontPx(c.fontBody) * 0.5f), U32(ImLerp(P.textSecondary, P.text, sl)), label);
     return changed;
 }
 
@@ -426,7 +484,7 @@ inline void BeginContent() {
     ImGui::PushStyleColor(ImGuiCol_ScrollbarGrab, U32(P.strokeStrong, 0.7f * c.scrollAlpha));
     ImGui::PushStyleColor(ImGuiCol_ScrollbarGrabHovered, U32(P.strokeStrong, 0.9f * c.scrollAlpha));
     ImGui::PushStyleColor(ImGuiCol_ScrollbarGrabActive, U32(P.strokeStrong, c.scrollAlpha));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(Px(28), Px(8)));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(Px(14), Px(4)));
     ImGui::BeginChild("##fl_content", ImVec2(0, 0), ImGuiChildFlags_AlwaysUseWindowPadding);
     ImGui::PopStyleVar();
     c.scrollHot = ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) && (ImGui::IsMouseDown(0) || ImGui::GetIO().MouseWheel != 0.f || c.scrollHot);
@@ -450,14 +508,14 @@ inline void EndContent() {
     ImGui::PopStyleColor(3);
 }
 
-// Smooth content switch: fade + slide-up whenever the tab index changes.
+// Page switch: headings fade in quickly, cards then cascade in one after another (see CardBegin).
 inline void BeginPage(int tab) {
     Context& c = Ctx();
-    if (tab != c.pageTab) { c.pageTab = tab; c.pageT = c.reduceMotion ? 1.f : 0.f; }
-    c.pageT = Sat(c.pageT + ImGui::GetIO().DeltaTime / 0.24f);
-    float e = EaseOut(c.pageT);
-    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImMax(e, 0.001f));
-    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (1.f - e) * Px(22));
+    if (tab != c.pageTab) { c.pageTab = tab; c.pageT = c.reduceMotion ? 1.f : 0.f; c.pageAge = 0.f; }
+    c.pageAge += ImGui::GetIO().DeltaTime;
+    c.pageT = Sat(c.pageT + ImGui::GetIO().DeltaTime / 0.18f);
+    c.cardIdx = 0;
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImMax(ImGui::GetStyle().Alpha * EaseOut(c.pageT), 0.001f));
 }
 inline void EndPage() { ImGui::PopStyleVar(); }
 
@@ -466,15 +524,15 @@ inline void PageTitle(const char* text) {
     ImGui::PushFont(c.fontTitle);
     ImGui::TextUnformatted(text);
     ImGui::PopFont();
-    ImGui::Dummy(ImVec2(0, Px(6)));
+    ImGui::Dummy(ImVec2(0, Px(2)));
 }
 inline void GroupHeader(const char* text) {
     Context& c = Ctx();
-    ImGui::Dummy(ImVec2(0, Px(6)));
+    ImGui::Dummy(ImVec2(0, Px(3)));
     ImGui::PushFont(c.fontSub);
     ImGui::TextUnformatted(text);
     ImGui::PopFont();
-    ImGui::Dummy(ImVec2(0, Px(2)));
+    ImGui::Dummy(ImVec2(0, Px(1)));
 }
 inline void Spacer(float h) { ImGui::Dummy(ImVec2(0, Px(h))); }
 
@@ -484,7 +542,7 @@ inline void Spacer(float h) { ImGui::Dummy(ImVec2(0, Px(h))); }
 inline bool Toggle(const char* sid, bool* v) {
     const Palette& P = Pal();
     ImGuiID id = ImGui::GetID(sid);
-    ImVec2 p = ImGui::GetCursorScreenPos(), sz(Px(40), Px(20));
+    ImVec2 p = ImGui::GetCursorScreenPos(), sz(Px(36), Px(18));
     Hit h = Interact(ImRect(p, p + sz), id);
     if (h.pressed) *v = !*v;
     float t = Animate(Sub(id, 0), *v ? 1.f : 0.f, 18.f), hv = Animate(Sub(id, 1), h.hovered ? 1.f : 0.f), hd = Animate(Sub(id, 2), h.held ? 1.f : 0.f, 24.f);
@@ -492,8 +550,8 @@ inline bool Toggle(const char* sid, bool* v) {
     float r = sz.y * 0.5f;
     dl->AddRectFilled(p, p + sz, U32(P.accent, t * (1.f - 0.15f * hd)), r);
     dl->AddRect(p, p + sz, U32(P.strokeStrong, 1.f - t), r, 0, ImMax(1.f, Px(1)));
-    float tr = Px(5.f) + Px(1.f) * hv + Px(1.f) * hd;                  // thumb grows on hover / press
-    float x = ImLerp(p.x + Px(10), p.x + sz.x - Px(10), t);
+    float tr = Px(4.5f) + Px(1.f) * hv + Px(1.f) * hd;                 // thumb grows on hover / press
+    float x = ImLerp(p.x + Px(9), p.x + sz.x - Px(9), t);
     dl->AddCircleFilled(ImVec2(x, p.y + r), tr, U32(ImLerp(P.textSecondary, P.onAccent, t)));
     return h.pressed;
 }
@@ -504,13 +562,13 @@ inline bool Checkbox(const char* label, bool* v) {
     std::string txt(label, end);
     ImGuiID id = ImGui::GetID(label);
     ImVec2 p = ImGui::GetCursorScreenPos();
-    float box = Px(20), tw = TextSize(c.fontBody, txt.c_str()).x;
-    ImRect bb(p, ImVec2(p.x + box + (tw > 0 ? Px(8) + tw : 0), p.y + Px(24)));
+    float box = Px(18), tw = TextSize(c.fontBody, txt.c_str()).x;
+    ImRect bb(p, ImVec2(p.x + box + (tw > 0 ? Px(8) + tw : 0), p.y + Px(22)));
     Hit h = Interact(bb, id);
     if (h.pressed) *v = !*v;
     float t = Animate(Sub(id, 0), *v ? 1.f : 0.f, 20.f), hv = Animate(Sub(id, 1), h.hovered ? 1.f : 0.f), pr = Animate(Sub(id, 2), h.held ? 1.f : 0.f, 24.f);
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    ImVec2 a(p.x, p.y + (Px(24) - box) * 0.5f), b(a.x + box, a.y + box);
+    ImVec2 a(p.x, p.y + (Px(22) - box) * 0.5f), b(a.x + box, a.y + box);
     dl->AddRectFilled(a, b, U32(P.control, (1.f - t) * (0.6f + 0.4f * hv)), Px(4));
     dl->AddRectFilled(a, b, U32(P.accent, t * (1.f - 0.2f * pr)), Px(4));
     dl->AddRect(a, b, U32(P.strokeStrong, 1.f - t), Px(4), 0, ImMax(1.f, Px(1)));
@@ -518,9 +576,9 @@ inline bool Checkbox(const char* label, bool* v) {
         ImVec2 c0(a.x + box * 0.24f, a.y + box * 0.52f), c1(a.x + box * 0.43f, a.y + box * 0.72f), c2(a.x + box * 0.77f, a.y + box * 0.30f);
         float k = t * 2.f; ImVec2 pts[3] = { c0, c1, c2 }; int n = 3;
         if (k < 1.f) { pts[1] = ImLerp(c0, c1, k); n = 2; } else pts[2] = ImLerp(c1, c2, k - 1.f);
-        dl->AddPolyline(pts, n, U32(P.onAccent), 0, ImMax(1.5f, Px(1.6f)));
+        dl->AddPolyline(pts, n, U32(P.onAccent), 0, ImMax(1.5f, Px(1.5f)));
     }
-    if (tw > 0) DrawLabel(dl, c.fontBody, ImVec2(a.x + box + Px(8), p.y + (Px(24) - FontPx(c.fontBody)) * 0.5f), U32(P.text), txt.c_str());
+    if (tw > 0) DrawLabel(dl, c.fontBody, ImVec2(a.x + box + Px(8), p.y + (Px(22) - FontPx(c.fontBody)) * 0.5f), U32(P.text), txt.c_str());
     return h.pressed;
 }
 
@@ -531,7 +589,7 @@ inline bool Button(const char* label, Kind kind = Kind::Standard, ImVec2 size = 
     ImGuiID id = ImGui::GetID(label);
     ImVec2 ts = TextSize(c.fontBody, txt.c_str());
     ImVec2 p = ImGui::GetCursorScreenPos();
-    float w = size.x > 0 ? size.x : ts.x + Px(32), h = size.y > 0 ? size.y : Px(32);
+    float w = size.x > 0 ? size.x : ts.x + Px(24), h = size.y > 0 ? size.y : Px(28);
     Hit hit = Interact(ImRect(p, ImVec2(p.x + w, p.y + h)), id);
     float hv = Animate(Sub(id, 0), hit.hovered ? 1.f : 0.f, 18.f), pr = Animate(Sub(id, 1), hit.held ? 1.f : 0.f, 26.f);
     ImVec4 base, hover, active, txtc;
@@ -544,7 +602,7 @@ inline bool Button(const char* label, Kind kind = Kind::Standard, ImVec2 size = 
     dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), U32(ImLerp(ImLerp(base, hover, hv), active, pr)), Px(4));
     dl->AddRect(p, ImVec2(p.x + w, p.y + h), U32(P.stroke, kind == Kind::Standard ? 1.f : 0.5f), Px(4));
     ImVec4 tc = txtc; tc.w *= 1.f - 0.2f * pr;
-    DrawLabel(dl, c.fontBody, ImVec2(p.x + (w - ts.x) * 0.5f, p.y + (h - ts.y) * 0.5f), U32(tc), txt.c_str());
+    DrawLabel(dl, c.fontBody, ImVec2(p.x + (w - ts.x) * 0.5f, p.y + (h - ts.y) * 0.5f + Px(0.5f) * pr), U32(tc), txt.c_str());
     return hit.pressed;
 }
 
@@ -554,11 +612,11 @@ inline bool SliderCore(const char* sid, float* v, float mn, float mx, const char
     Context& c = Ctx(); const Palette& P = c.pal;
     ImGuiID id = ImGui::GetID(sid);
     ImVec2 p = ImGui::GetCursorScreenPos();
-    float h = Px(24), gap = Px(12), valW = Px(60);
+    float h = Px(22), gap = Px(10), valW = Px(50);
     ImVec2 after = ImVec2(p.x, p.y + h + ImGui::GetStyle().ItemSpacing.y);
     ImGui::ItemSize(ImVec2(trackW + gap + valW, h));
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    float thumbR = Px(10);
+    float thumbR = Px(8);
     ImRect tb(p, ImVec2(p.x + trackW, p.y + h));
     Hit th = InteractRaw(tb, id);
     bool changed = false;
@@ -576,7 +634,7 @@ inline bool SliderCore(const char* sid, float* v, float mn, float mx, const char
     dl->AddRectFilled(ImVec2(x0, cy - tr), ImVec2(tx, cy + tr), U32(P.accent), tr);
     dl->AddCircleFilled(ImVec2(tx, cy), thumbR, U32(P.popup));
     dl->AddCircle(ImVec2(tx, cy), thumbR, U32(P.stroke, 2.f));
-    dl->AddCircleFilled(ImVec2(tx, cy), Px(4.f) + Px(1.5f) * hv - Px(1.5f) * pr, U32(P.accent));
+    dl->AddCircleFilled(ImVec2(tx, cy), Px(3.5f) + Px(1.5f) * hv - Px(1.5f) * pr, U32(P.accent));
 
     // value box / precise input
     ImVec2 vp(p.x + trackW + gap, p.y);
@@ -589,12 +647,13 @@ inline bool SliderCore(const char* sid, float* v, float mn, float mx, const char
         Hit vh = InteractRaw(vb, Sub(id, 8));
         dl->AddRectFilled(vb.Min, vb.Max, U32(P.control, vh.hovered ? 1.4f : 1.f), Px(4));
         dl->AddRect(vb.Min, vb.Max, U32(P.stroke), Px(4));
-        char tmp[32]; snprintf(tmp, sizeof(tmp), isInt ? "%d" : fmt, isInt ? (int)*v : *v);
+        char tmp[32];
+        if (isInt) snprintf(tmp, sizeof(tmp), "%d", (int)*v); else snprintf(tmp, sizeof(tmp), fmt, *v);
         ImVec2 ts = TextSize(c.fontBody, tmp);
         DrawLabel(dl, c.fontBody, ImVec2(vb.Min.x + (valW - ts.x) * 0.5f, vb.Min.y + (h - ts.y) * 0.5f), U32(P.text), tmp);
         if (vh.pressed || (th.hovered && ImGui::IsMouseDoubleClicked(0))) {
             st->SetBool(eid, true); focus = true; editFrame = ImGui::GetFrameCount();
-            snprintf(buf, sizeof(buf), isInt ? "%d" : "%g", isInt ? (int)*v : *v);
+            if (isInt) snprintf(buf, sizeof(buf), "%d", (int)*v); else snprintf(buf, sizeof(buf), "%g", *v);
         }
     } else {
         ImVec2 save = ImGui::GetCursorScreenPos();
@@ -616,8 +675,8 @@ inline bool SliderCore(const char* sid, float* v, float mn, float mx, const char
     ImGui::SetCursorScreenPos(after);
     return changed;
 }
-inline bool SliderFloat(const char* sid, float* v, float mn, float mx, const char* fmt = "%.1f", float width = 220.f) { return SliderCore(sid, v, mn, mx, fmt, false, Px(width)); }
-inline bool SliderInt(const char* sid, int* v, int mn, int mx, float width = 220.f) {
+inline bool SliderFloat(const char* sid, float* v, float mn, float mx, const char* fmt = "%.1f", float width = 130.f) { return SliderCore(sid, v, mn, mx, fmt, false, Px(width)); }
+inline bool SliderInt(const char* sid, int* v, int mn, int mx, float width = 130.f) {
     float f = (float)*v; bool ch = SliderCore(sid, &f, (float)mn, (float)mx, "%d", true, Px(width)); if (ch) *v = (int)f; return ch;
 }
 
@@ -626,20 +685,20 @@ inline bool PopupItem(const char* label, bool selected, bool multi = false) {
     Context& c = Ctx(); const Palette& P = c.pal;
     ImGuiID id = ImGui::GetID(label);
     ImVec2 p = ImGui::GetCursorScreenPos();
-    float w = ImGui::GetContentRegionAvail().x, h = Px(36);
+    float w = ImGui::GetContentRegionAvail().x, h = Px(30);
     Hit hit = Interact(ImRect(p, ImVec2(p.x + w, p.y + h)), id);
     float hv = Animate(Sub(id, 0), hit.hovered ? 1.f : 0.f), sl = Animate(Sub(id, 1), selected ? 1.f : 0.f);
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), U32(P.subtle, ImMax(hv, multi ? 0.f : sl * 0.8f)), Px(4));
-    float tx = p.x + Px(12);
+    float tx = p.x + Px(10);
     if (multi) {
-        float b = Px(18); ImVec2 a(p.x + Px(10), p.y + (h - b) * 0.5f);
+        float b = Px(16); ImVec2 a(p.x + Px(8), p.y + (h - b) * 0.5f);
         dl->AddRectFilled(a, ImVec2(a.x + b, a.y + b), U32(P.accent, sl), Px(4));
         dl->AddRect(a, ImVec2(a.x + b, a.y + b), U32(P.strokeStrong, 1.f - sl), Px(4), 0, ImMax(1.f, Px(1)));
         if (sl > 0.01f) DrawIcon(dl, Icon::Check, ImVec2(a.x + b * 0.5f, a.y + b * 0.5f), b * 0.9f, U32(P.onAccent, sl));
-        tx = p.x + Px(38);
+        tx = p.x + Px(32);
     } else if (sl > 0.01f) {
-        float bh = Px(16) * sl;
+        float bh = Px(14) * sl;
         dl->AddRectFilled(ImVec2(p.x + Px(2), p.y + h * 0.5f - bh * 0.5f), ImVec2(p.x + Px(5), p.y + h * 0.5f + bh * 0.5f), U32(P.accent), Px(2));
     }
     DrawLabel(dl, c.fontBody, ImVec2(tx, p.y + (h - FontPx(c.fontBody)) * 0.5f), U32(P.text), label);
@@ -649,27 +708,27 @@ inline bool PopupItem(const char* label, bool selected, bool multi = false) {
 inline bool ComboButton(const char* sid, const char* text, float width, bool open, ImRect* outBB) {
     Context& c = Ctx(); const Palette& P = c.pal;
     ImGuiID id = ImGui::GetID(sid);
-    ImVec2 p = ImGui::GetCursorScreenPos(); float h = Px(32);
+    ImVec2 p = ImGui::GetCursorScreenPos(); float h = Px(28);
     ImRect bb(p, ImVec2(p.x + width, p.y + h));
     Hit hit = Interact(bb, id);
     float hv = Animate(Sub(id, 0), hit.hovered ? 1.f : 0.f), pr = Animate(Sub(id, 1), hit.held ? 1.f : 0.f, 24.f), op = Animate(Sub(id, 2), open ? 1.f : 0.f);
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->AddRectFilled(bb.Min, bb.Max, U32(ImLerp(ImLerp(P.control, P.controlHover, hv), P.controlActive, pr)), Px(4));
     dl->AddRect(bb.Min, bb.Max, U32(P.stroke), Px(4));
-    DrawLabel(dl, c.fontBody, ImVec2(p.x + Px(12), p.y + (h - FontPx(c.fontBody)) * 0.5f), U32(P.text), text);
-    DrawIcon(dl, Icon::Chevron, ImVec2(bb.Max.x - Px(16), p.y + h * 0.5f + Px(1) * hv - Px(1) * op), Px(12), U32(P.textSecondary));
+    dl->PushClipRect(bb.Min, ImVec2(bb.Max.x - Px(24), bb.Max.y), true);
+    DrawLabel(dl, c.fontBody, ImVec2(p.x + Px(10), p.y + (h - FontPx(c.fontBody)) * 0.5f), U32(P.text), text);
+    dl->PopClipRect();
+    DrawIcon(dl, Icon::Chevron, ImVec2(bb.Max.x - Px(13), p.y + h * 0.5f + Px(1) * hv - Px(1) * op), Px(11), U32(P.textSecondary));
     *outBB = bb;
     return hit.pressed;
 }
-
-inline void PopupBegin(const char* sid, const ImRect& anchor, float width, bool* open) {}
 
 inline bool BeginDropdown(const char* sid, const ImRect& bb, float width) {
     ImGuiID id = ImGui::GetID(sid);
     ImGuiStorage* st = ImGui::GetStateStorage();
     if (!ImGui::IsPopupOpen(sid)) st->SetFloat(Sub(id, 5), 0.f);
     float a = Animate(Sub(id, 5), 1.f, 22.f, 0.f);
-    ImGui::SetNextWindowPos(ImVec2(bb.Min.x, bb.Max.y + Px(4) - (1.f - a) * Px(8)));
+    ImGui::SetNextWindowPos(ImVec2(bb.Min.x, bb.Max.y + Px(3) - (1.f - a) * Px(8)));
     ImGui::SetNextWindowSize(ImVec2(width, 0));
     ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImMax(a, 0.001f));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(Px(4), Px(4)));
@@ -681,7 +740,7 @@ inline bool BeginDropdown(const char* sid, const ImRect& bb, float width) {
 }
 inline void EndDropdown() { ImGui::EndPopup(); ImGui::PopStyleColor(); ImGui::PopStyleVar(3); }
 
-inline bool Combo(const char* sid, int* cur, const char* const* items, int n, float width = 180.f) {
+inline bool Combo(const char* sid, int* cur, const char* const* items, int n, float width = 140.f) {
     float w = Px(width); ImRect bb; bool changed = false;
     bool open = ImGui::IsPopupOpen(sid);
     if (ComboButton(sid, items[*cur], w, open, &bb)) ImGui::OpenPopup(sid);
@@ -694,7 +753,7 @@ inline bool Combo(const char* sid, int* cur, const char* const* items, int n, fl
 }
 
 // Multi-select dropdown: list with check boxes, stays open while ticking.
-inline bool MultiCombo(const char* sid, const char* const* items, bool* sel, int n, float width = 180.f) {
+inline bool MultiCombo(const char* sid, const char* const* items, bool* sel, int n, float width = 140.f) {
     float w = Px(width); ImRect bb; bool changed = false;
     std::string sum; int cnt = 0;
     for (int i = 0; i < n; i++) if (sel[i]) { cnt++; if (cnt <= 2) sum += (cnt > 1 ? ", " : "") + std::string(items[i]); }
@@ -708,7 +767,7 @@ inline bool MultiCombo(const char* sid, const char* const* items, bool* sel, int
 }
 
 inline void Checker(ImDrawList* dl, ImVec2 a, ImVec2 b) {
-    float s = Px(6);
+    float s = Px(5);
     dl->PushClipRect(a, b, true);
     dl->AddRectFilled(a, b, IM_COL32(255, 255, 255, 255));
     for (float y = a.y, r = 0; y < b.y; y += s, r++)
@@ -721,7 +780,7 @@ inline bool ColorEdit(const char* sid, float col[4]) {
     Context& c = Ctx(); const Palette& P = c.pal;
     ImGuiID id = ImGui::GetID(sid);
     ImGuiStorage* st = ImGui::GetStateStorage();
-    ImVec2 p = ImGui::GetCursorScreenPos(); ImVec2 sz(Px(56), Px(28));
+    ImVec2 p = ImGui::GetCursorScreenPos(); ImVec2 sz(Px(48), Px(24));
     Hit hit = Interact(ImRect(p, p + sz), id);
     float hv = Animate(Sub(id, 0), hit.hovered ? 1.f : 0.f);
     ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -735,12 +794,11 @@ inline bool ColorEdit(const char* sid, float col[4]) {
         ImGui::OpenPopup(sid);
     }
     bool changed = false;
-    if (BeginDropdown(sid, ImRect(p, p + sz), Px(256))) {
+    if (BeginDropdown(sid, ImRect(p, p + sz), Px(200))) {
         float h = st->GetFloat(hid, 0), s = st->GetFloat(sid2, 0), v = st->GetFloat(vid, 1);
         ImDrawList* d = ImGui::GetWindowDrawList();
-        float W = ImGui::GetContentRegionAvail().x - Px(8), sq = W, bar = Px(18);
+        float W = ImGui::GetContentRegionAvail().x - Px(8), sq = W * 0.75f, bar = Px(16);
         ImVec2 o = ImGui::GetCursorScreenPos(); o.x += Px(4);
-        // saturation / value square
         ImRect svb(o, ImVec2(o.x + W, o.y + sq));
         ImGui::ItemSize(ImVec2(W, sq));
         Hit sh = InteractRaw(svb, Sub(id, 30));
@@ -750,8 +808,7 @@ inline bool ColorEdit(const char* sid, float col[4]) {
         d->AddRectFilledMultiColor(svb.Min, svb.Max, IM_COL32_WHITE, hc, hc, IM_COL32_WHITE);
         d->AddRectFilledMultiColor(svb.Min, svb.Max, IM_COL32(0, 0, 0, 0), IM_COL32(0, 0, 0, 0), IM_COL32_BLACK, IM_COL32_BLACK);
         ImVec2 sp(svb.Min.x + s * W, svb.Min.y + (1.f - v) * sq);
-        d->AddCircle(sp, Px(7), IM_COL32_WHITE, 0, Px(2)); d->AddCircle(sp, Px(8.5f), IM_COL32(0, 0, 0, 90), 0, Px(1));
-        // hue bar
+        d->AddCircle(sp, Px(6), IM_COL32_WHITE, 0, Px(2)); d->AddCircle(sp, Px(7.5f), IM_COL32(0, 0, 0, 90), 0, Px(1));
         ImGui::Dummy(ImVec2(0, Px(2)));
         ImVec2 ho = ImGui::GetCursorScreenPos(); ho.x += Px(4);
         ImRect hb2(ho, ImVec2(ho.x + W, ho.y + bar));
@@ -765,7 +822,6 @@ inline bool ColorEdit(const char* sid, float col[4]) {
         }
         d->AddCircleFilled(ImVec2(hb2.Min.x + h * W, hb2.GetCenter().y), bar * 0.5f, IM_COL32_WHITE);
         d->AddCircle(ImVec2(hb2.Min.x + h * W, hb2.GetCenter().y), bar * 0.5f, IM_COL32(0, 0, 0, 90), 0, Px(1));
-        // alpha bar
         ImGui::Dummy(ImVec2(0, Px(2)));
         ImVec2 ao = ImGui::GetCursorScreenPos(); ao.x += Px(4);
         ImRect ab(ao, ImVec2(ao.x + W, ao.y + bar));
@@ -779,7 +835,7 @@ inline bool ColorEdit(const char* sid, float col[4]) {
         d->AddCircleFilled(ImVec2(ab.Min.x + col[3] * W, ab.GetCenter().y), bar * 0.5f, IM_COL32_WHITE);
         d->AddCircle(ImVec2(ab.Min.x + col[3] * W, ab.GetCenter().y), bar * 0.5f, IM_COL32(0, 0, 0, 90), 0, Px(1));
         char hex[40]; snprintf(hex, sizeof(hex), "#%02X%02X%02X   A %d%%", (int)(hr * 255 + .5f), (int)(hg * 255 + .5f), (int)(hb * 255 + .5f), (int)(col[3] * 100 + .5f));
-        ImGui::Dummy(ImVec2(0, Px(4)));
+        ImGui::Dummy(ImVec2(0, Px(3)));
         ImGui::PushStyleColor(ImGuiCol_Text, P.textSecondary);
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + Px(4));
         ImGui::TextUnformatted(hex);
@@ -796,7 +852,7 @@ inline bool KeyBind(const char* sid, int* key) {
     ImGuiID id = ImGui::GetID(sid);
     ImGuiStorage* st = ImGui::GetStateStorage();
     bool wait = st->GetBool(id, false);
-    ImVec2 p = ImGui::GetCursorScreenPos(); ImVec2 sz(Px(132), Px(32));
+    ImVec2 p = ImGui::GetCursorScreenPos(); ImVec2 sz(Px(110), Px(28));
     Hit hit = Interact(ImRect(p, p + sz), id);
     bool changed = false;
     if (hit.pressed && !wait) { st->SetBool(id, true); wait = true; }
@@ -823,7 +879,7 @@ inline bool KeyBind(const char* sid, int* key) {
 inline bool InputText(const char* sid, char* buf, size_t size, float width = 0.f, const char* hint = "") {
     Context& c = Ctx(); const Palette& P = c.pal;
     ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, Px(4));
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(Px(12), (Px(32) - FontPx(c.fontBody)) * 0.5f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(Px(10), (Px(28) - FontPx(c.fontBody)) * 0.5f));
     ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, ImMax(1.f, Px(1)));
     ImGui::PushStyleColor(ImGuiCol_Border, P.stroke);
     ImGui::SetNextItemWidth(width > 0 ? Px(width) : ImGui::GetContentRegionAvail().x);
@@ -839,7 +895,7 @@ inline bool InputText(const char* sid, char* buf, size_t size, float width = 0.f
 // Win11-style tooltip; call right after the item it describes.
 inline void Tooltip(const char* text) {
     if (!ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) return;
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(Px(10), Px(7)));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(Px(8), Px(5)));
     ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding, Px(6));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, ImMax(1.f, Px(1)));
     ImGui::PushStyleColor(ImGuiCol_Border, Pal().stroke);
@@ -850,67 +906,82 @@ inline void Tooltip(const char* text) {
 // ----------------------------------------------------------------------------------------------
 // Settings cards (icon + title + description + control on the right), sections
 // ----------------------------------------------------------------------------------------------
-inline void CardBegin(Icon ic, const char* title, const char* desc) {
+// ctrlW reserves room for the control so long text is clipped instead of overlapping it.
+// Cards cascade in (fade + slide) one after another whenever the page changes.
+inline void CardBegin(Icon ic, const char* title, const char* desc, float ctrlW = 0.f) {
     Context& c = Ctx(); const Palette& P = c.pal;
     ImGui::PushID(title);
     bool hasDesc = desc && *desc;
-    ImVec2 p = ImGui::GetCursorScreenPos();
-    ImVec2 sz(ImGui::GetContentRegionAvail().x, Px(hasDesc ? 64.f : 52.f));
-    c.cardStart = p; c.cardSize = sz;
+    ImVec2 lp = ImGui::GetCursorScreenPos();
+    float delay = ImMin(c.cardIdx * 0.04f, 0.4f); c.cardIdx++;
+    float e = c.reduceMotion ? 1.f : EaseOut((c.pageAge - delay) / 0.26f);
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImMax(ImGui::GetStyle().Alpha * e, 0.001f));
+    ImVec2 p(lp.x, lp.y + (1.f - e) * Px(10));
+    ImVec2 sz(ImGui::GetContentRegionAvail().x, Px(hasDesc ? 50.f : 42.f));
+    c.cardLayout = lp; c.cardStart = p; c.cardSize = sz;
     float hv = Animate(ImGui::GetID("##cardhv"), ImGui::IsMouseHoveringRect(p, p + sz) && ImGui::IsWindowHovered() ? 1.f : 0.f, 14.f);
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->AddRectFilled(p, p + sz, U32(ImLerp(P.card, P.cardHover, hv)), Px(4));
     dl->AddRect(p, p + sz, U32(P.stroke), Px(4));
-    float tx = p.x + Px(16);
-    if (ic != Icon::None) { DrawIcon(dl, ic, ImVec2(p.x + Px(32), p.y + sz.y * 0.5f), Px(20), U32(P.text)); tx = p.x + Px(58); }
+    float tx = p.x + Px(12);
+    if (ic != Icon::None) { DrawIcon(dl, ic, ImVec2(p.x + Px(24), p.y + sz.y * 0.5f), Px(16), U32(P.text)); tx = p.x + Px(42); }
     float bh = FontPx(c.fontBody), sh = FontPx(c.fontSmall);
+    dl->PushClipRect(ImVec2(tx, p.y), ImVec2(p.x + sz.x - ctrlW - Px(20), p.y + sz.y), true);
     if (hasDesc) {
-        float total = bh + Px(2) + sh, y = p.y + (sz.y - total) * 0.5f;
+        float total = bh + Px(1) + sh, y = p.y + (sz.y - total) * 0.5f;
         DrawLabel(dl, c.fontBody, ImVec2(tx, y), U32(P.text), title);
-        DrawLabel(dl, c.fontSmall, ImVec2(tx, y + bh + Px(2)), U32(P.textSecondary), desc);
+        DrawLabel(dl, c.fontSmall, ImVec2(tx, y + bh + Px(1)), U32(P.textSecondary), desc);
     } else DrawLabel(dl, c.fontBody, ImVec2(tx, p.y + (sz.y - bh) * 0.5f), U32(P.text), title);
+    dl->PopClipRect();
 }
-inline ImVec2 CardCtrl(float w, float h) { Context& c = Ctx(); return ImVec2(c.cardStart.x + c.cardSize.x - Px(16) - w, c.cardStart.y + (c.cardSize.y - h) * 0.5f); }
-inline void CardEnd() { Context& c = Ctx(); ImGui::SetCursorScreenPos(c.cardStart); ImGui::Dummy(c.cardSize); ImGui::PopID(); }
+inline ImVec2 CardCtrl(float w, float h) { Context& c = Ctx(); return ImVec2(c.cardStart.x + c.cardSize.x - Px(12) - w, c.cardStart.y + (c.cardSize.y - h) * 0.5f); }
+inline void CardEnd() { Context& c = Ctx(); ImGui::SetCursorScreenPos(c.cardLayout); ImGui::Dummy(c.cardSize); ImGui::PopStyleVar(); ImGui::PopID(); }
 
 inline bool ToggleCard(Icon ic, const char* title, const char* desc, bool* v) {
-    CardBegin(ic, title, desc); ImGui::SetCursorScreenPos(CardCtrl(Px(40), Px(20)));
+    CardBegin(ic, title, desc, Px(36)); ImGui::SetCursorScreenPos(CardCtrl(Px(36), Px(18)));
     bool ch = Toggle("##t", v); CardEnd(); return ch;
 }
 inline bool SliderFloatCard(Icon ic, const char* title, const char* desc, float* v, float mn, float mx, const char* fmt = "%.1f") {
-    CardBegin(ic, title, desc); ImGui::SetCursorScreenPos(CardCtrl(Px(220 + 12 + 60), Px(24)));
+    float w = Px(130 + 10 + 50);
+    CardBegin(ic, title, desc, w); ImGui::SetCursorScreenPos(CardCtrl(w, Px(22)));
     bool ch = SliderFloat("##s", v, mn, mx, fmt); CardEnd(); return ch;
 }
 inline bool SliderIntCard(Icon ic, const char* title, const char* desc, int* v, int mn, int mx) {
-    CardBegin(ic, title, desc); ImGui::SetCursorScreenPos(CardCtrl(Px(220 + 12 + 60), Px(24)));
+    float w = Px(130 + 10 + 50);
+    CardBegin(ic, title, desc, w); ImGui::SetCursorScreenPos(CardCtrl(w, Px(22)));
     bool ch = SliderInt("##s", v, mn, mx); CardEnd(); return ch;
 }
 inline bool ComboCard(Icon ic, const char* title, const char* desc, int* cur, const char* const* items, int n) {
-    CardBegin(ic, title, desc); ImGui::SetCursorScreenPos(CardCtrl(Px(180), Px(32)));
+    CardBegin(ic, title, desc, Px(140)); ImGui::SetCursorScreenPos(CardCtrl(Px(140), Px(28)));
     bool ch = Combo("##c", cur, items, n); CardEnd(); return ch;
 }
 inline bool MultiComboCard(Icon ic, const char* title, const char* desc, const char* const* items, bool* sel, int n) {
-    CardBegin(ic, title, desc); ImGui::SetCursorScreenPos(CardCtrl(Px(180), Px(32)));
+    CardBegin(ic, title, desc, Px(140)); ImGui::SetCursorScreenPos(CardCtrl(Px(140), Px(28)));
     bool ch = MultiCombo("##m", items, sel, n); CardEnd(); return ch;
 }
 inline bool ColorCard(Icon ic, const char* title, const char* desc, float col[4]) {
-    CardBegin(ic, title, desc); ImGui::SetCursorScreenPos(CardCtrl(Px(56), Px(28)));
+    CardBegin(ic, title, desc, Px(48)); ImGui::SetCursorScreenPos(CardCtrl(Px(48), Px(24)));
     bool ch = ColorEdit("##col", col); CardEnd(); return ch;
 }
 inline bool KeyBindCard(Icon ic, const char* title, const char* desc, int* key) {
-    CardBegin(ic, title, desc); ImGui::SetCursorScreenPos(CardCtrl(Px(132), Px(32)));
+    CardBegin(ic, title, desc, Px(110)); ImGui::SetCursorScreenPos(CardCtrl(Px(110), Px(28)));
     bool ch = KeyBind("##k", key); CardEnd(); return ch;
 }
 inline bool ButtonCard(Icon ic, const char* title, const char* desc, const char* btn, Kind kind = Kind::Standard) {
-    float w = TextSize(Ctx().fontBody, btn).x + Px(32);
-    CardBegin(ic, title, desc); ImGui::SetCursorScreenPos(CardCtrl(w, Px(32)));
+    float w = TextSize(Ctx().fontBody, btn).x + Px(24);
+    CardBegin(ic, title, desc, w); ImGui::SetCursorScreenPos(CardCtrl(w, Px(28)));
     bool ch = Button(btn, kind); CardEnd(); return ch;
+}
+// Text field inside a card (config name, address ...)
+inline bool InputCard(Icon ic, const char* title, const char* desc, char* buf, size_t size, const char* hint = "") {
+    CardBegin(ic, title, desc, Px(150)); ImGui::SetCursorScreenPos(CardCtrl(Px(150), Px(28)));
+    bool ch = InputText("##in", buf, size, 150.f, hint); CardEnd(); return ch;
 }
 // Static read-only value on the right (status text, etc.)
 inline void ValueCard(Icon ic, const char* title, const char* desc, const char* value, bool good = false) {
     Context& c = Ctx();
-    CardBegin(ic, title, desc);
-    ImVec2 ts = TextSize(c.fontBody, value); ImVec2 pos = CardCtrl(ts.x, ts.y);
+    ImVec2 ts = TextSize(c.fontBody, value);
+    CardBegin(ic, title, desc, ts.x); ImVec2 pos = CardCtrl(ts.x, ts.y);
     DrawLabel(ImGui::GetWindowDrawList(), c.fontBody, pos, U32(good ? c.pal.accent : c.pal.textSecondary), value);
     CardEnd();
 }
@@ -921,22 +992,22 @@ inline bool BeginSection(Icon ic, const char* title, const char* desc, bool defa
     ImGuiID id = ImGui::GetID(title);
     ImGuiStorage* st = ImGui::GetStateStorage();
     bool open = st->GetBool(Sub(id, 50), defaultOpen);
-    CardBegin(ic, title, desc);
+    CardBegin(ic, title, desc, Px(24));
     ImVec2 s = c.cardStart; ImVec2 sz = c.cardSize;
     ImGui::SetCursorScreenPos(s);
     Hit hit = InteractRaw(ImRect(s, s + sz), Sub(id, 51));
     if (hit.pressed) { open = !open; st->SetBool(Sub(id, 50), open); }
     float t = Animate(Sub(id, 52), open ? 1.f : 0.f, 16.f);
     float flip = 1.f - 2.f * t;                                        // chevron rotates down -> up
-    ImVec2 cc(s.x + sz.x - Px(28), s.y + sz.y * 0.5f), q = ImVec2(Px(6), Px(3)) * flip;
+    ImVec2 cc(s.x + sz.x - Px(20), s.y + sz.y * 0.5f), q = ImVec2(Px(5), Px(2.5f)) * flip;
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    ImVec2 pts[3] = { ImVec2(cc.x - Px(5), cc.y - q.y), ImVec2(cc.x, cc.y + q.y), ImVec2(cc.x + Px(5), cc.y - q.y) };
+    ImVec2 pts[3] = { ImVec2(cc.x - Px(4.5f), cc.y - q.y), ImVec2(cc.x, cc.y + q.y), ImVec2(cc.x + Px(4.5f), cc.y - q.y) };
     dl->AddPolyline(pts, 3, U32(P.textSecondary), 0, ImMax(1.f, Px(1.5f)));
     CardEnd();
-    if (open) ImGui::Indent(Px(16));
+    if (open) ImGui::Indent(Px(12));
     return open;
 }
-inline void EndSection() { ImGui::Unindent(Px(16)); }
+inline void EndSection() { ImGui::Unindent(Px(12)); }
 
 // ----------------------------------------------------------------------------------------------
 // Toasts (bottom-right, slide in / fade out)
@@ -957,21 +1028,21 @@ inline void RenderToasts() {
         float age = c.time - t.born;
         if (age > life) { c.toasts.erase(c.toasts.begin() + i); continue; }
         float in = EaseOut(age / 0.3f), out = Sat((life - age) / 0.3f);
-        float w = Px(300), h = Px(56), m = Px(16);
-        ImVec2 p(disp.x - w - m + (1.f - in) * (w + 2 * m), disp.y - m - (idx + 1) * (h + Px(8)) + idx * 0.f);
+        float w = Px(250), h = Px(44), m = Px(12);
+        ImVec2 p(disp.x - w - m + (1.f - in) * (w + 2 * m), disp.y - m - (idx + 1) * (h + Px(6)));
         float al = out;
         for (int k = 8; k >= 1; k--) {
-            float ex = Px(k * 1.5f), kk = 1.f - k / 8.f;
-            dl->AddRectFilled(ImVec2(p.x - ex, p.y - ex + Px(4)), ImVec2(p.x + w + ex, p.y + h + ex + Px(4)), U32(P.shadow, al * (0.12f * kk * kk + 0.01f)), Px(8) + ex);
+            float ex = Px(k * 1.3f), kk = 1.f - k / 8.f;
+            dl->AddRectFilled(ImVec2(p.x - ex, p.y - ex + Px(3)), ImVec2(p.x + w + ex, p.y + h + ex + Px(3)), U32(P.shadow, al * (0.12f * kk * kk + 0.01f)), Px(8) + ex);
         }
         dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), U32(P.popup, al), Px(8));
         dl->AddRect(p, ImVec2(p.x + w, p.y + h), U32(P.stroke, al * 1.5f), Px(8));
         ImVec4 ac = t.type == ToastType::Error ? P.danger : P.accent;
-        ImVec2 ic(p.x + Px(28), p.y + h * 0.5f);
-        dl->AddCircleFilled(ic, Px(12), U32(ac, al));
-        DrawIcon(dl, t.type == ToastType::Success ? Icon::Check : (t.type == ToastType::Error ? Icon::Close : Icon::Info), ic, Px(12),
+        ImVec2 ic(p.x + Px(22), p.y + h * 0.5f);
+        dl->AddCircleFilled(ic, Px(10), U32(ac, al));
+        DrawIcon(dl, t.type == ToastType::Success ? Icon::Check : (t.type == ToastType::Error ? Icon::Close : Icon::Info), ic, Px(10),
                  U32(t.type == ToastType::Error ? RGBA(255, 255, 255) : P.onAccent, al));
-        DrawLabel(dl, c.fontBody, ImVec2(p.x + Px(52), p.y + (h - FontPx(c.fontBody)) * 0.5f), U32(P.text, al), t.text.c_str());
+        DrawLabel(dl, c.fontBody, ImVec2(p.x + Px(42), p.y + (h - FontPx(c.fontBody)) * 0.5f), U32(P.text, al), t.text.c_str());
         idx++; i++;
     }
 }
