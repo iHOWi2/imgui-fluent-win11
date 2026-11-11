@@ -41,12 +41,6 @@ jobs:
         id: build
         run: gradle --no-daemon assembleDebug 2>&1 | tee build.log
 
-      - uses: actions/upload-artifact@v4
-        id: artifact
-        with:
-          name: fluent-imgui-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
-
       - name: Publish release (latest)
         id: release
         env:
@@ -65,12 +59,8 @@ jobs:
             echo "Build failed for commit ${GITHUB_SHA}."
             echo "Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
             echo
-            echo "Step outcomes: imgui=${{ steps.imgui.outcome }} sdk=${{ steps.sdk.outcome }} gradle-setup=${{ steps.setupgradle.outcome }} build=${{ steps.build.outcome }} artifact=${{ steps.artifact.outcome }} release=${{ steps.release.outcome }}"
+            echo "Step outcomes: imgui=${{ steps.imgui.outcome }} sdk=${{ steps.sdk.outcome }} gradle-setup=${{ steps.setupgradle.outcome }} build=${{ steps.build.outcome }} release=${{ steps.release.outcome }}"
             echo
-            echo "--- sdk.log (tail) ---"
-            echo '```'
-            tail -n 25 sdk.log 2>/dev/null || echo "no sdk.log"
-            echo '```'
             echo "--- build.log errors ---"
             echo '```'
             grep -E "error:|Error|FAILED|undefined reference|What went wrong|CMake Error" build.log 2>/dev/null | head -60 || true
