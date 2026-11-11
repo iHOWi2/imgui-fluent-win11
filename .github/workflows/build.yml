@@ -12,6 +12,7 @@ permissions:
 jobs:
   apk:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
 
@@ -21,26 +22,33 @@ jobs:
           java-version: '17'
 
       - name: Fetch Dear ImGui
+        id: imgui
         run: git clone --depth 1 --branch v1.91.9 https://github.com/ocornut/imgui.git third_party/imgui
 
       - name: Android SDK packages
+        id: sdk
         run: |
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;26.1.10909125" "cmake;3.22.1" "platforms;android-34"
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" "ndk;26.1.10909125" "cmake;3.22.1" "platforms;android-34" 2>&1 | tee sdk.log
 
       - uses: gradle/actions/setup-gradle@v4
+        id: setupgradle
         with:
           gradle-version: '8.7'
 
       - name: Build debug APK
+        id: build
         run: gradle --no-daemon assembleDebug 2>&1 | tee build.log
 
       - uses: actions/upload-artifact@v4
+        id: artifact
         with:
           name: fluent-imgui-debug-apk
           path: app/build/outputs/apk/debug/*.apk
 
       - name: Publish release (latest)
+        id: release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -57,8 +65,19 @@ jobs:
             echo "Build failed for commit ${GITHUB_SHA}."
             echo "Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
             echo
+            echo "Step outcomes: imgui=${{ steps.imgui.outcome }} sdk=${{ steps.sdk.outcome }} gradle-setup=${{ steps.setupgradle.outcome }} build=${{ steps.build.outcome }} artifact=${{ steps.artifact.outcome }} release=${{ steps.release.outcome }}"
+            echo
+            echo "--- sdk.log (tail) ---"
             echo '```'
-            grep -E "error|Error|FAILED|undefined reference|What went wrong" build.log | head -60 || true
+            tail -n 25 sdk.log 2>/dev/null || echo "no sdk.log"
+            echo '```'
+            echo "--- build.log errors ---"
+            echo '```'
+            grep -E "error:|Error|FAILED|undefined reference|What went wrong|CMake Error" build.log 2>/dev/null | head -60 || true
+            echo '```'
+            echo "--- build.log (tail) ---"
+            echo '```'
+            tail -n 60 build.log 2>/dev/null || echo "no build.log"
             echo '```'
           } > issue.md
           gh issue create --title "Build failed: ${GITHUB_SHA::7}" --body-file issue.md
