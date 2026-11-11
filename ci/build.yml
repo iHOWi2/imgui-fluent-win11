@@ -1,5 +1,5 @@
 # Move this file to .github/workflows/build.yml (GitHub UI: Add file > Create new file, paste).
-# It could not be pushed automatically because the connected token has no 'workflow' scope.
+# Pushing workflows needs a token with the 'workflow' scope, which the connected token lacks.
 name: Build APK
 
 on:
@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: write
+  issues: write
 
 jobs:
   apk:
@@ -34,7 +35,7 @@ jobs:
           gradle-version: '8.7'
 
       - name: Build debug APK
-        run: gradle --no-daemon assembleDebug
+        run: gradle --no-daemon assembleDebug 2>&1 | tee build.log
 
       - uses: actions/upload-artifact@v4
         with:
@@ -48,3 +49,19 @@ jobs:
           gh release delete latest -y --cleanup-tag || true
           gh release create latest app/build/outputs/apk/debug/app-debug.apk \
             --title "Latest build" --notes "Debug APK, landscape. Install and open Fluent ImGui."
+
+      - name: Report failure as an issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "Build failed for commit ${GITHUB_SHA}."
+            echo "Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo
+            echo '```'
+            grep -E "error|Error|FAILED|undefined reference|What went wrong" build.log | head -60 || true
+            echo '```'
+          } > issue.md
+          gh issue create --title "Build failed: ${GITHUB_SHA::7}" --label build-failure --body-file issue.md || \
+          gh issue create --title "Build failed: ${GITHUB_SHA::7}" --body-file issue.md
