@@ -1,0 +1,50 @@
+# Move this file to .github/workflows/build.yml (GitHub UI: Add file > Create new file, paste).
+# It could not be pushed automatically because the connected token has no 'workflow' scope.
+name: Build APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Fetch Dear ImGui
+        run: git clone --depth 1 --branch v1.91.9 https://github.com/ocornut/imgui.git third_party/imgui
+
+      - name: Android SDK packages
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;26.1.10909125" "cmake;3.22.1" "platforms;android-34"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Build debug APK
+        run: gradle --no-daemon assembleDebug
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fluent-imgui-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+
+      - name: Publish release (latest)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest -y --cleanup-tag || true
+          gh release create latest app/build/outputs/apk/debug/app-debug.apk \
+            --title "Latest build" --notes "Debug APK, landscape. Install and open Fluent ImGui."

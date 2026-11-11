@@ -1,0 +1,6 @@
+third_party/imgui/
+.gradle/
+build/
+app/build/
+local.properties
+.cxx/
